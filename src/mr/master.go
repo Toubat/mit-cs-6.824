@@ -1,11 +1,13 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -19,6 +21,7 @@ type Master struct {
 	ReduceTasks []ReduceTask
 	NReduce     int
 	TaskStage   TaskType
+	sync.Mutex
 }
 
 // RPC handlers for the worker to call.
@@ -28,6 +31,35 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	m.Lock()
+	defer m.Unlock()
+
+	var tasks []MapReduceTask
+	if m.TaskStage == Map {
+		tasks = make([]MapReduceTask, len(m.MapTasks))
+		for i, task := range m.MapTasks {
+			tasks[i] = &task
+		}
+	} else {
+		tasks = make([]MapReduceTask, len(m.ReduceTasks))
+		for i, task := range m.ReduceTasks {
+			tasks[i] = &task
+		}
+	}
+
+	reply.Task = nil
+	for _, task := range tasks {
+		if task.GetState() != Idle {
+			continue
+		}
+
+		task.SetState(InProgress)
+		task.Schedule()
+		reply.Task = &task
+
+		fmt.Printf("Assigned %v Task %v to worker\n", m.TaskStage, task)
+	}
+
 	return nil
 }
 
@@ -51,19 +83,25 @@ func (m *Master) Serve() {
 func (m *Master) Cron() {
 	ticker := time.NewTicker(CronPeriod)
 
-	// periodically check if any worker has crashed
+	// periodically check if any worker task has crashed
 	for range ticker.C {
+		m.Lock()
+
 		for _, task := range m.MapTasks {
 			if task.State == InProgress && time.Since(task.LastScheduled) > CrashTimeout {
 				task.State = Idle
+				fmt.Printf("Map Task %v has crashed, reset to Idle\n", task.Id)
 			}
 		}
 
 		for _, task := range m.ReduceTasks {
 			if task.State == InProgress && time.Since(task.LastScheduled) > CrashTimeout {
 				task.State = Idle
+				fmt.Printf("Reduce Task %v has crashed, reset to Idle\n", task.Id)
 			}
 		}
+
+		m.Unlock()
 	}
 }
 

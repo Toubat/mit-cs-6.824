@@ -28,15 +28,18 @@ const (
 	Completed
 )
 
-type TaskType int
+type TaskType string
 
 const (
-	Map TaskType = iota
-	Reduce
+	Map    TaskType = "Map"
+	Reduce TaskType = "Reduce"
 )
 
 type MapReduceTask interface {
 	GetType() TaskType
+	GetState() TaskState
+	SetState(state TaskState)
+	Schedule()
 }
 
 type MapTask struct {
@@ -52,6 +55,18 @@ func (t *MapTask) GetType() TaskType {
 	return Map
 }
 
+func (t *MapTask) GetState() TaskState {
+	return t.State
+}
+
+func (t *MapTask) SetState(state TaskState) {
+	t.State = state
+}
+
+func (t *MapTask) Schedule() {
+	t.LastScheduled = time.Now()
+}
+
 type ReduceTask struct {
 	Id            int
 	NMap          int
@@ -62,6 +77,18 @@ type ReduceTask struct {
 
 func (t *ReduceTask) GetType() TaskType {
 	return Reduce
+}
+
+func (t *ReduceTask) GetState() TaskState {
+	return t.State
+}
+
+func (t *ReduceTask) SetState(state TaskState) {
+	t.State = state
+}
+
+func (t *ReduceTask) Schedule() {
+	t.LastScheduled = time.Now()
 }
 
 // RPC definitions
