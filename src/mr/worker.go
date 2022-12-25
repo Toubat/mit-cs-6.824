@@ -26,8 +26,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the master.
-	// CallExample()
-
+	CallExample()
 }
 
 // example function to show how to make an RPC call to the master.

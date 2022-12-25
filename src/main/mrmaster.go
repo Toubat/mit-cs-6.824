@@ -21,8 +21,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println(os.Args)
-
 	m := mr.MakeMaster(os.Args[1:], 10)
 	for m.Done() == false {
 		time.Sleep(time.Second)

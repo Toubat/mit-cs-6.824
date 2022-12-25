@@ -1,13 +1,13 @@
 #!/bin/sh
 
-# 
+#
 # basic map-reduce test
 #
 
-RACE= 
+RACE=
 
 # uncomment this to run the tests with the Go race detector.
-#RACE=-race
+RACE=-race
 
 # run the test in a fresh sub-directory.
 rm -rf mr-tmp
@@ -149,19 +149,19 @@ sleep 1
 
 ( while [ -e mr-socket -a ! -f mr-done ]
   do
-    ../mrworker ../../mrapps/crash.so 
+    ../mrworker ../../mrapps/crash.so
     sleep 1
   done ) &
 
 ( while [ -e mr-socket -a ! -f mr-done ]
   do
-    ../mrworker ../../mrapps/crash.so 
+    ../mrworker ../../mrapps/crash.so
     sleep 1
   done ) &
 
 while [ -e mr-socket -a ! -f mr-done ]
 do
-  ../mrworker ../../mrapps/crash.so 
+  ../mrworker ../../mrapps/crash.so
   sleep 1
 done
 
