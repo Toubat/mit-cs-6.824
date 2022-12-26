@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	CrashTimeout = 10 * time.Second
-	CronPeriod   = 1 * time.Second
+	CrashTimeout     = 10 * time.Second
+	MasterCronPeriod = 1 * time.Second
 )
 
 type Master struct {
@@ -55,9 +55,40 @@ func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 
 		task.SetState(InProgress)
 		task.Schedule()
-		reply.Task = &task
+		reply.Task = task
 
 		fmt.Printf("Assigned %v Task %v to worker\n", m.TaskStage, task)
+	}
+
+	return nil
+}
+
+func (m *Master) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) error {
+	m.Lock()
+	defer m.Unlock()
+
+	switch args.TaskType {
+	case Map:
+		task := m.MapTasks[args.Id]
+		task.SetState(Completed)
+		fmt.Printf("Completed Map Task %v\n", task.Id)
+
+		if m.TaskStage == Map && m.AllMapTasksCompleted() {
+			m.TaskStage = Reduce
+			fmt.Printf("All Map tasks are completed, switching to Reduce stage\n")
+		}
+	case Reduce:
+		task := m.ReduceTasks[args.Id]
+		task.SetState(Completed)
+		fmt.Printf("Completed Reduce Task %v\n", task.Id)
+
+		if m.TaskStage == Reduce && m.AllReduceTasksCompleted() {
+			// TODO: merge the output files
+			// ...
+
+			fmt.Printf("All Reduce tasks are completed, exiting\n")
+			os.Exit(0)
+		}
 	}
 
 	return nil
@@ -81,7 +112,7 @@ func (m *Master) Serve() {
 }
 
 func (m *Master) Cron() {
-	ticker := time.NewTicker(CronPeriod)
+	ticker := time.NewTicker(MasterCronPeriod)
 
 	// periodically check if any worker task has crashed
 	for range ticker.C {
@@ -103,6 +134,26 @@ func (m *Master) Cron() {
 
 		m.Unlock()
 	}
+}
+
+func (m *Master) AllMapTasksCompleted() bool {
+	for _, task := range m.MapTasks {
+		if task.State != Completed {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (m *Master) AllReduceTasksCompleted() bool {
+	for _, task := range m.ReduceTasks {
+		if task.State != Completed {
+			return false
+		}
+	}
+
+	return true
 }
 
 // main/mrmaster.go calls Done() periodically to find out

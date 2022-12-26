@@ -96,7 +96,7 @@ type GetTaskArgs struct {
 }
 
 type GetTaskReply struct {
-	Task *MapReduceTask
+	Task MapReduceTask
 }
 
 type CompleteTaskArgs struct {
