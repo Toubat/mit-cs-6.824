@@ -20,12 +20,12 @@ type ExampleReply struct {
 }
 
 // Type definitions
-type TaskState int
+type TaskState string
 
 const (
-	Idle TaskState = iota
-	InProgress
-	Completed
+	Idle       TaskState = "Idle"
+	InProgress TaskState = "InProgress"
+	Completed  TaskState = "Completed"
 )
 
 type TaskType string
@@ -33,13 +33,13 @@ type TaskType string
 const (
 	Map    TaskType = "Map"
 	Reduce TaskType = "Reduce"
+	Empty  TaskType = ""
 )
 
-type MapReduceTask interface {
-	GetType() TaskType
-	GetState() TaskState
-	SetState(state TaskState)
-	Schedule()
+type MapReduceTask struct {
+	TaskType
+	MapTask
+	ReduceTask
 }
 
 type MapTask struct {
@@ -48,23 +48,6 @@ type MapTask struct {
 	NReduce       int
 	State         TaskState
 	LastScheduled time.Time
-	MapReduceTask
-}
-
-func (t *MapTask) GetType() TaskType {
-	return Map
-}
-
-func (t *MapTask) GetState() TaskState {
-	return t.State
-}
-
-func (t *MapTask) SetState(state TaskState) {
-	t.State = state
-}
-
-func (t *MapTask) Schedule() {
-	t.LastScheduled = time.Now()
 }
 
 type ReduceTask struct {
@@ -72,23 +55,6 @@ type ReduceTask struct {
 	NMap          int
 	State         TaskState
 	LastScheduled time.Time
-	MapReduceTask
-}
-
-func (t *ReduceTask) GetType() TaskType {
-	return Reduce
-}
-
-func (t *ReduceTask) GetState() TaskState {
-	return t.State
-}
-
-func (t *ReduceTask) SetState(state TaskState) {
-	t.State = state
-}
-
-func (t *ReduceTask) Schedule() {
-	t.LastScheduled = time.Now()
 }
 
 // RPC definitions

@@ -17,8 +17,8 @@ const (
 )
 
 type Master struct {
-	MapTasks    []MapTask
-	ReduceTasks []ReduceTask
+	MapTasks    []*MapTask
+	ReduceTasks []*ReduceTask
 	NReduce     int
 	TaskStage   TaskType
 	sync.Mutex
@@ -34,43 +34,53 @@ func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	m.Lock()
 	defer m.Unlock()
 
-	var tasks []MapReduceTask
-	if m.TaskStage == Map {
-		tasks = make([]MapReduceTask, len(m.MapTasks))
-		for i, task := range m.MapTasks {
-			tasks[i] = &task
-		}
-	} else {
-		tasks = make([]MapReduceTask, len(m.ReduceTasks))
-		for i, task := range m.ReduceTasks {
-			tasks[i] = &task
-		}
-	}
+	// m.DebugMaster()
+	reply.Task.TaskType = Empty
 
-	reply.Task = nil
-	for _, task := range tasks {
-		if task.GetState() != Idle {
-			continue
+	switch m.TaskStage {
+	case Map:
+		for _, task := range m.MapTasks {
+			if task.State != Idle {
+				continue
+			}
+
+			task.State = InProgress
+			task.LastScheduled = time.Now()
+			reply.Task.TaskType = Map
+			reply.Task.MapTask = *task
+
+			fmt.Printf("Assigned Map Task %v to worker %v\n", task.Id, task.State == InProgress)
+			break
 		}
 
-		task.SetState(InProgress)
-		task.Schedule()
-		reply.Task = task
+	case Reduce:
+		for _, task := range m.ReduceTasks {
+			if task.State != Idle {
+				continue
+			}
 
-		fmt.Printf("Assigned %v Task %v to worker\n", m.TaskStage, task)
+			task.State = InProgress
+			task.LastScheduled = time.Now()
+			reply.Task.TaskType = Reduce
+			reply.Task.ReduceTask = *task
+
+			fmt.Printf("Assigned Reduce Task %v to worker\n", task.Id)
+			break
+		}
 	}
 
 	return nil
 }
 
 func (m *Master) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) error {
+	fmt.Println("CompleteTask")
 	m.Lock()
 	defer m.Unlock()
 
 	switch args.TaskType {
 	case Map:
 		task := m.MapTasks[args.Id]
-		task.SetState(Completed)
+		task.State = Completed
 		fmt.Printf("Completed Map Task %v\n", task.Id)
 
 		if m.TaskStage == Map && m.AllMapTasksCompleted() {
@@ -79,13 +89,10 @@ func (m *Master) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) 
 		}
 	case Reduce:
 		task := m.ReduceTasks[args.Id]
-		task.SetState(Completed)
+		task.State = Completed
 		fmt.Printf("Completed Reduce Task %v\n", task.Id)
 
 		if m.TaskStage == Reduce && m.AllReduceTasksCompleted() {
-			// TODO: merge the output files
-			// ...
-
 			fmt.Printf("All Reduce tasks are completed, exiting\n")
 			os.Exit(0)
 		}
@@ -156,6 +163,20 @@ func (m *Master) AllReduceTasksCompleted() bool {
 	return true
 }
 
+func (m *Master) DebugMaster() {
+	fmt.Printf("Task Stage: %v\n", m.TaskStage)
+
+	for _, task := range m.MapTasks {
+		fmt.Printf("Map Task %v: %v\n", task.Id, task.State)
+	}
+
+	for _, task := range m.ReduceTasks {
+		fmt.Printf("Reduce Task %v: %v\n", task.Id, task.State)
+	}
+
+	fmt.Println()
+}
+
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
 func (m *Master) Done() bool {
@@ -168,9 +189,9 @@ func (m *Master) Done() bool {
 
 // create a Master.
 func MakeMaster(files []string, nReduce int) *Master {
-	mapTasks := make([]MapTask, len(files))
+	mapTasks := make([]*MapTask, len(files))
 	for i, file := range files {
-		mapTasks[i] = MapTask{
+		mapTasks[i] = &MapTask{
 			Id:      i,
 			File:    file,
 			NReduce: nReduce,
@@ -178,9 +199,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 		}
 	}
 
-	reduceTasks := make([]ReduceTask, nReduce)
+	reduceTasks := make([]*ReduceTask, nReduce)
 	for i := 0; i < nReduce; i++ {
-		reduceTasks[i] = ReduceTask{
+		reduceTasks[i] = &ReduceTask{
 			Id:    i,
 			NMap:  len(files),
 			State: Idle,

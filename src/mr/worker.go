@@ -33,23 +33,18 @@ type Worker struct {
 
 func (w *Worker) Cron() {
 	for {
-		task, err := w.GetTask()
+		mrTask, err := w.GetTask()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("GetTask failed: %v", err)
 		}
 
-		if task == nil {
+		switch mrTask.TaskType {
+		case Empty:
 			time.Sleep(1 * time.Second)
 			continue
-		}
 
-		switch task.GetType() {
 		case Map:
-			mapTask := task.(*MapTask)
-			if mapTask == nil {
-				log.Fatal("Invalid MapTask")
-			}
-
+			mapTask := mrTask.MapTask
 			file, err := os.Open(mapTask.File)
 			if err != nil {
 				log.Fatalf("cannot open %v", mapTask.File)
@@ -73,7 +68,7 @@ func (w *Worker) Cron() {
 					if ihash(kv.Key)%mapTask.NReduce == reduceTaskId {
 						err := enc.Encode(&kv)
 						if err != nil {
-							log.Fatal(err)
+							log.Fatalf("Encode failed: %v", err)
 						}
 					}
 				}
@@ -83,17 +78,14 @@ func (w *Worker) Cron() {
 			w.CompleteTask(mapTask.Id, Map)
 
 		case Reduce:
-			reduceTask := task.(*ReduceTask)
-			if reduceTask == nil {
-				log.Fatal("Invalid ReduceTask")
-			}
-
+			reduceTask := mrTask.ReduceTask
 			intermediate := make([]KeyValue, 0)
+
 			for mapTaskId := 0; mapTaskId < reduceTask.NMap; mapTaskId++ {
 				filename := CreateIntermediateFilename(mapTaskId, reduceTask.Id)
 				file, err := os.Open(filename)
 				if err != nil {
-					log.Fatal(err)
+					log.Fatalf("cannot open %v", filename)
 				}
 
 				dec := json.NewDecoder(file)
@@ -112,7 +104,7 @@ func (w *Worker) Cron() {
 
 			tempFile, err := ioutil.TempFile("", "mr-out-tmp-*")
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("TempFile failed: %v", err)
 			}
 
 			i := 0
@@ -135,7 +127,7 @@ func (w *Worker) Cron() {
 
 			err = os.Rename(tempFile.Name(), CreateOutputFilename(reduceTask.Id))
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("Rename failed: %v", err)
 			}
 
 			tempFile.Close()
@@ -150,7 +142,7 @@ func MakeWorker(mapf func(string, string) []KeyValue, reducef func(string, []str
 		ReduceF: reducef,
 	}
 
-	go worker.Cron()
+	worker.Cron()
 }
 
 func (w *Worker) GetTask() (MapReduceTask, error) {
