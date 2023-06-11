@@ -25,11 +25,6 @@ type Master struct {
 }
 
 // RPC handlers for the worker to call.
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	m.Lock()
 	defer m.Unlock()
@@ -49,7 +44,7 @@ func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			reply.Task.TaskType = Map
 			reply.Task.MapTask = *task
 
-			fmt.Printf("Assigned Map Task %v to worker %v\n", task.Id, task.State == InProgress)
+			// fmt.Printf("Assigned Map Task %v to worker %v\n", task.Id, task.State == InProgress)
 			break
 		}
 
@@ -64,7 +59,7 @@ func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			reply.Task.TaskType = Reduce
 			reply.Task.ReduceTask = *task
 
-			fmt.Printf("Assigned Reduce Task %v to worker\n", task.Id)
+			// fmt.Printf("Assigned Reduce Task %v to worker\n", task.Id)
 			break
 		}
 	}
@@ -73,7 +68,7 @@ func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 }
 
 func (m *Master) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) error {
-	fmt.Println("CompleteTask")
+	// fmt.Println("CompleteTask")
 	m.Lock()
 	defer m.Unlock()
 
@@ -81,19 +76,19 @@ func (m *Master) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) 
 	case Map:
 		task := m.MapTasks[args.Id]
 		task.State = Completed
-		fmt.Printf("Completed Map Task %v\n", task.Id)
+		// fmt.Printf("Completed Map Task %v\n", task.Id)
 
 		if m.TaskStage == Map && m.AllMapTasksCompleted() {
 			m.TaskStage = Reduce
-			fmt.Printf("All Map tasks are completed, switching to Reduce stage\n")
+			// fmt.Printf("All Map tasks are completed, switching to Reduce stage\n")
 		}
 	case Reduce:
 		task := m.ReduceTasks[args.Id]
 		task.State = Completed
-		fmt.Printf("Completed Reduce Task %v\n", task.Id)
+		// fmt.Printf("Completed Reduce Task %v\n", task.Id)
 
 		if m.TaskStage == Reduce && m.AllReduceTasksCompleted() {
-			fmt.Printf("All Reduce tasks are completed, exiting\n")
+			// fmt.Printf("All Reduce tasks are completed, exiting\n")
 			os.Exit(0)
 		}
 	}
