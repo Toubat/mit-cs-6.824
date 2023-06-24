@@ -61,12 +61,14 @@ type LogEntry struct {
 	Term int
 }
 
+type LogEntries []LogEntry
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	// Persistent state on all servers
 	currentTerm int
 	votedFor    int
-	logEntries  []LogEntry
+	logEntries  LogEntries
 
 	// Volatile state on all servers
 	commitIndex int
@@ -95,6 +97,25 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 	return term, isleader
+}
+
+func (rf *Raft) isUpToDate(term int, index int) bool {
+	l := rf.logEntries
+
+	if index == -1 {
+		return len(l) == 0
+	}
+
+	if len(l) == 0 {
+		return true
+	}
+
+	// Check if the last entry of each log is different
+	if l[len(l)-1].Term != term {
+		return term > l[len(l)-1].Term
+	}
+
+	return index+1 >= len(l)
 }
 
 // save Raft's persistent state to stable storage,
@@ -147,6 +168,7 @@ func (rf *Raft) readPersist(data []byte) {
 
 func (rf *Raft) run() {
 	go rf.startElectionTimer()
+	go rf.heartbeat()
 }
 
 func (rf *Raft) startElectionTimer() {
@@ -162,6 +184,11 @@ func (rf *Raft) startElectionTimer() {
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func (rf *Raft) heartbeat() {
+	// TODO: implement heartbeat
+	// ...
 }
 
 func (rf *Raft) startElection() {
@@ -235,7 +262,7 @@ func (rf *Raft) startElection() {
 	}
 }
 
-// example RequestVote RPC arguments structure.
+// RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	Term         int // candidate's term
@@ -244,16 +271,40 @@ type RequestVoteArgs struct {
 	LastLogTerm  int // term of candidate's last log entry
 }
 
-// example RequestVote RPC reply structure.
+// RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	Term        int  // currentTerm, for candidate to update itself
 	VoteGranted bool // true means candidate received vote
 }
 
+func (rf *Raft) onRequestVote(term int) {
+	if term > rf.currentTerm {
+		rf.currentTerm = term
+		rf.state = Follower
+		rf.votedFor = Invalid
+	}
+}
+
 // RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Rules for Servers: All Servers (2)
+	rf.onRequestVote(args.Term)
+
+	if rf.state != Follower || args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if (rf.votedFor == Invalid || rf.votedFor == args.CandidateId) && rf.isUpToDate(args.LastLogTerm, args.LastLogIndex) {
+		rf.votedFor = args.CandidateId
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+	}
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -266,7 +317,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int        // so follower can redirect clients
 	PrevLogIndex int        // index of log entry immediately preceding new ones
 	PrevLogTerm  int        // term of prevLogIndex entry
-	Entries      []LogEntry // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	Entries      LogEntries // log entries to store (empty for heartbeat; may send more than one for efficiency)
 	LeaderCommit int        // leader's commitIndex
 }
 
@@ -275,8 +326,36 @@ type AppendEntriesReply struct {
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 }
 
+func (rf *Raft) onAppendEntries(term int, leaderId int) {
+	if term >= rf.currentTerm {
+		rf.currentTerm = term
+		rf.state = Follower
+		rf.votedFor = leaderId
+	}
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Rules for Servers: All Servers (2)
+	rf.onAppendEntries(args.Term, args.LeaderId)
+
+	if rf.state != Follower || args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	reply.Term = rf.currentTerm
+	reply.Success = true
+
+	if len(args.Entries) == 0 {
+		return
+	}
+
+	// TODO: implement log replication
+	// ...
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
