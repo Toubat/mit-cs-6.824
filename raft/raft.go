@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,7 @@ const MinElectionTimeout = 450 * time.Millisecond
 const MaxElectionTimeout = 750 * time.Millisecond
 const ElectionTickInterval = 10 * time.Millisecond
 const HeartbeatInterval = 150 * time.Millisecond
+const CommitIndexInterval = 50 * time.Millisecond
 
 type State string
 
@@ -77,8 +79,8 @@ type Raft struct {
 	lastApplied int
 
 	// Volatile state on leaders
-	nextIndex  []int
-	matchIndex []int
+	nextIndex  []int // for each server, index of the next log entry to send to that server
+	matchIndex []int // for each server, index of highest log entry known to be replicated on server
 
 	// Other state
 	peers           []*labrpc.ClientEnd // RPC end points of all peers
@@ -86,6 +88,7 @@ type Raft struct {
 	self            int                 // this peer's index into peers[]
 	dead            int32               // set by Kill()
 	applyCh         chan ApplyMsg       // channel to send committed messages to kvserver
+	applyCond       *sync.Cond          // condition variable to notify changes of commitIndex
 	state           State               // current server state
 	electionTimeout time.Time           // next election timeout time
 	mu              sync.Mutex          // Lock to protect shared access to this peer's state
@@ -100,19 +103,31 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == Leader
 }
 
-func (rf *Raft) GetPrevLogIndex() int {
+func (rf *Raft) GetLastLogIndex() int {
 	return len(rf.logEntries) - 1
 }
 
-func (rf *Raft) GetPrevLogTerm() int {
-	prevLogIndex := rf.GetPrevLogIndex()
+func (rf *Raft) GetLastLogTerm() int {
+	prevLogIndex := rf.GetLastLogIndex()
 	if prevLogIndex >= 0 {
 		return rf.logEntries[prevLogIndex].Term
 	}
 	return Invalid
 }
 
-func (rf *Raft) isUpToDate(term int, index int) bool {
+func (rf *Raft) GetPrevLogIndex(i int) int {
+	return rf.nextIndex[i] - 1
+}
+
+func (rf *Raft) GetPrevLogTerm(i int) int {
+	prevLogIndex := rf.GetPrevLogIndex(i)
+	if prevLogIndex >= 0 {
+		return rf.logEntries[prevLogIndex].Term
+	}
+	return Invalid
+}
+
+func (rf *Raft) CheckUpToDate(term int, index int) bool {
 	l := rf.logEntries
 
 	if index == -1 {
@@ -129,6 +144,24 @@ func (rf *Raft) isUpToDate(term int, index int) bool {
 	}
 
 	return index+1 >= len(l)
+}
+
+// return whether the log entry at a given index is consistent with the given term
+// the first return value is whether the log entry matches the term
+// the second return value is whether a conflict is found
+func (rf *Raft) CheckLogMatch(prevLogIndex int, prevLogTerm int) (bool, bool) {
+	// leader has empty log
+	if prevLogIndex < 0 {
+		return true, false
+	}
+
+	// leader's log is longer than follower's log
+	if prevLogIndex > rf.GetLastLogIndex() {
+		return false, false
+	}
+
+	matchTerm := rf.logEntries[prevLogIndex].Term == prevLogTerm
+	return matchTerm, !matchTerm
 }
 
 // save Raft's persistent state to stable storage,
@@ -159,6 +192,18 @@ func (rf *Raft) resetIndex() {
 	}
 }
 
+func (rf *Raft) appendLogEntry(index int, entry LogEntry) {
+	if index < len(rf.logEntries) {
+		rf.logEntries[index] = entry
+		return
+	}
+
+	if index != len(rf.logEntries) {
+		log.Fatalf("index %d is not the next index", index)
+	}
+	rf.logEntries = append(rf.logEntries, entry)
+}
+
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
@@ -182,6 +227,7 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) run() {
 	go rf.startElectionTimer()
 	go rf.heartbeat()
+	go rf.refreshCommitIndex()
 }
 
 func (rf *Raft) startElectionTimer() {
@@ -216,6 +262,56 @@ func (rf *Raft) heartbeat() {
 	}
 }
 
+// periodically check if commitIndex can be advanced, and update commitIndex
+func (rf *Raft) refreshCommitIndex() {
+	for {
+		rf.mu.Lock()
+		isLeader := rf.state == Leader
+		rf.mu.Unlock()
+
+		if isLeader {
+			rf.updateCommitIndex()
+		}
+
+		time.Sleep(CommitIndexInterval)
+	}
+}
+
+func (rf *Raft) updateCommitIndex() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// find the largest N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm
+	N, lo, hi := rf.commitIndex, rf.commitIndex+1, rf.GetLastLogIndex()
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+
+		matchCount := 0
+		for _, idx := range rf.matchIndex {
+			if idx >= mid {
+				matchCount++
+			}
+		}
+
+		if matchCount < len(rf.peers)/2+1 { // no majority, go left
+			hi = mid - 1
+		} else if rf.logEntries[mid].Term < rf.currentTerm { // older term, go right
+			lo = mid + 1
+		} else if rf.logEntries[mid].Term > rf.currentTerm { // newer term, go left
+			DPrintf("[%d] [ERROR] found a newer term %d > %d while updating commitIndex", rf.self, rf.logEntries[mid].Term, rf.currentTerm)
+			hi = mid - 1
+		} else { // found a feasible commitIndex
+			N = mid
+			lo = mid + 1
+		}
+	}
+
+	if N != rf.commitIndex {
+		rf.commitIndex = N
+		rf.applyCond.Broadcast()
+	}
+}
+
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	rf.state = Candidate
@@ -228,8 +324,8 @@ func (rf *Raft) startElection() {
 	requestVoteArgs := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.self,
-		LastLogIndex: rf.GetPrevLogIndex(),
-		LastLogTerm:  rf.GetPrevLogTerm(),
+		LastLogIndex: rf.GetLastLogIndex(),
+		LastLogTerm:  rf.GetLastLogTerm(),
 	}
 	rf.mu.Unlock()
 
@@ -290,13 +386,20 @@ func (rf *Raft) sendHeartbeat() {
 	rf.mu.Lock()
 	// prepare AppendEntriesArgs for RPC
 	self := rf.self
-	appendEntriesArgs := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.self,
-		PrevLogIndex: rf.GetPrevLogIndex(),
-		PrevLogTerm:  rf.GetPrevLogTerm(),
-		Entries:      make(LogEntries, 0),
-		LeaderCommit: rf.commitIndex,
+	appendEntriesArgList := make([]AppendEntriesArgs, len(rf.peers))
+	for i := range rf.peers {
+		if i == self {
+			continue
+		}
+
+		appendEntriesArgList[i] = AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.self,
+			PrevLogIndex: rf.GetPrevLogIndex(i),
+			PrevLogTerm:  rf.GetPrevLogTerm(i),
+			Entries:      rf.logEntries[rf.nextIndex[i]:],
+			LeaderCommit: rf.commitIndex,
+		}
 	}
 	rf.mu.Unlock()
 
@@ -306,10 +409,10 @@ func (rf *Raft) sendHeartbeat() {
 			continue
 		}
 
-		go func(server int) {
-			appendEntriesReply := AppendEntriesReply{}
+		go func(server int, appendEntriesArgs *AppendEntriesArgs) {
 			DPrintf("[%d] sending heartbeat to [%d]", self, server)
-			ok := rf.sendAppendEntries(server, &appendEntriesArgs, &appendEntriesReply)
+			appendEntriesReply := AppendEntriesReply{}
+			ok := rf.sendAppendEntries(server, appendEntriesArgs, &appendEntriesReply)
 			if !ok {
 				return
 			}
@@ -327,12 +430,17 @@ func (rf *Raft) sendHeartbeat() {
 
 			if appendEntriesReply.Success {
 				DPrintf("[%d] heartbeat acknowledged by [%d]", self, server)
-				// TODO: handle nextIndex and matchIndex
+				// update nextIndex and matchIndex
+				rf.matchIndex[server] = appendEntriesArgs.PrevLogIndex + len(appendEntriesArgs.Entries)
+				rf.nextIndex[server] = rf.matchIndex[server] + 1
 			} else {
 				DPrintf("[%d] heartbeat rejected by [%d]", self, server)
-				// TODO: decrement nextIndex and retry
+				// decrement nextIndex and retry
+				rf.nextIndex[server]--
+				// TODO: optimize decrement nextIndex process
+				// ...
 			}
-		}(i)
+		}(i, &appendEntriesArgList[i])
 	}
 }
 
@@ -359,11 +467,16 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (2B).
+	index := len(rf.logEntries)
+	term := rf.currentTerm
+	isLeader := rf.state == Leader
+
+	// if isLeader {
+
+	// }
 
 	return index, term, isLeader
 }
@@ -400,8 +513,8 @@ func Make(peers []*labrpc.ClientEnd, self int, persister *Persister, applyCh cha
 		currentTerm: 0,
 		votedFor:    Invalid,
 		logEntries:  make([]LogEntry, 0),
-		commitIndex: 0,
-		lastApplied: 0,
+		commitIndex: Invalid,
+		lastApplied: Invalid,
 		nextIndex:   make([]int, len(peers)),
 		matchIndex:  make([]int, len(peers)),
 		peers:       peers,

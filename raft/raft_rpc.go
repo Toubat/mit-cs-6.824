@@ -55,14 +55,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if (rf.votedFor == Invalid || rf.votedFor == args.CandidateId) && rf.isUpToDate(args.LastLogTerm, args.LastLogIndex) {
+	upToDate := rf.CheckUpToDate(args.LastLogTerm, args.LastLogIndex)
+	if (rf.votedFor == Invalid || rf.votedFor == args.CandidateId) && upToDate {
 		DPrintf("[%d] [%s] granted vote for [%d]", rf.self, "RequestVote", args.CandidateId)
 		rf.votedFor = args.CandidateId
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		rf.resetElectionTimeout()
 	} else {
-		DPrintf("[%d] [%s] rejected vote request from [%d]; votedFor: %v, isUpToDate: %v", rf.self, "RequestVote", args.CandidateId, rf.votedFor, rf.isUpToDate(args.LastLogTerm, args.LastLogIndex))
+		DPrintf("[%d] [%s] rejected vote request from [%d]; votedFor: %v, isUpToDate: %v", rf.self, "RequestVote", args.CandidateId, rf.votedFor, upToDate)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
@@ -94,13 +95,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	DPrintf("[%d] [%s] accepted heartbeat from [%d]", rf.self, "AppendEntries", args.LeaderId)
 	rf.resetElectionTimeout()
-	reply.Term = rf.currentTerm
-	reply.Success = true
 
-	if len(args.Entries) == 0 {
+	match, conflict := rf.CheckLogMatch(args.PrevLogIndex, args.PrevLogTerm)
+	if !match && !conflict {
+		DPrintf("[%d] [%s] missing log entries starting from index %d", rf.self, "AppendEntries", args.PrevLogIndex)
+		reply.Term = rf.currentTerm
+		reply.Success = false
 		return
 	}
 
-	// TODO: implement log replication
-	// ...
+	// delete all entries starting from the conflicting entry
+	if conflict {
+		DPrintf("[%d] [%s] deleting log entries starting from index %d", rf.self, "AppendEntries", args.PrevLogIndex)
+		rf.logEntries = rf.logEntries[:args.PrevLogIndex]
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	// found matching log prefix, append new entries
+	for i, entry := range args.Entries {
+		rf.appendLogEntry(args.PrevLogIndex+i+1, entry)
+	}
+
+	// update commit index
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = Min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
+	}
+
+	DPrintf("[%d] [%s] appended %d log entries from [%d]; updated commitIndex to %d", rf.self, "AppendEntries", len(args.Entries), args.LeaderId, rf.commitIndex)
+	reply.Term = rf.currentTerm
+	reply.Success = true
 }
