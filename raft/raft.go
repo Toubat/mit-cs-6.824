@@ -35,6 +35,7 @@ const MaxElectionTimeout = 750 * time.Millisecond
 const ElectionTickInterval = 10 * time.Millisecond
 const HeartbeatInterval = 150 * time.Millisecond
 const CommitIndexInterval = 50 * time.Millisecond
+const ApplyLogInterval = 50 * time.Millisecond
 
 type State string
 
@@ -62,7 +63,8 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct {
-	Term int
+	Term    int
+	Command interface{}
 }
 
 type LogEntries []LogEntry
@@ -228,6 +230,7 @@ func (rf *Raft) run() {
 	go rf.startElectionTimer()
 	go rf.heartbeat()
 	go rf.refreshCommitIndex()
+	go rf.applyCommittedEntries()
 }
 
 func (rf *Raft) startElectionTimer() {
@@ -245,6 +248,30 @@ func (rf *Raft) startElectionTimer() {
 		}
 
 		time.Sleep(ElectionTickInterval)
+	}
+}
+
+func (rf *Raft) applyCommittedEntries() {
+	for {
+		rf.mu.Lock()
+		for rf.commitIndex <= rf.lastApplied {
+			rf.applyCond.Wait()
+		}
+
+		if rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+			entry := rf.logEntries[rf.lastApplied]
+
+			// apply the command to the state machine
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: rf.lastApplied,
+			}
+		}
+		rf.mu.Unlock()
+
+		time.Sleep(ApplyLogInterval)
 	}
 }
 
@@ -300,7 +327,7 @@ func (rf *Raft) updateCommitIndex() {
 		} else if rf.logEntries[mid].Term > rf.currentTerm { // newer term, go left
 			DPrintf("[%d] [ERROR] found a newer term %d > %d while updating commitIndex", rf.self, rf.logEntries[mid].Term, rf.currentTerm)
 			hi = mid - 1
-		} else { // found a feasible commitIndex
+		} else { // found a feasible commitIndex, record and go right
 			N = mid
 			lo = mid + 1
 		}
@@ -474,9 +501,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
 
-	// if isLeader {
-
-	// }
+	if isLeader {
+		DPrintf("[%d] received command %v", rf.self, command)
+		rf.logEntries = append(rf.logEntries, LogEntry{
+			Term:    term,
+			Command: command,
+		})
+	}
 
 	return index, term, isLeader
 }
