@@ -339,6 +339,12 @@ func (rf *Raft) updateCommitIndex() {
 		rf.applyCond.Broadcast()
 	}
 
+	if rf.state == Leader {
+		// print nextIndex & matchIndex
+		DPrintf("[%d] [%v] nextIndex: %v", rf.self, rf.state, rf.nextIndex)
+		DPrintf("[%d] [%v] matchIndex: %v", rf.self, rf.state, rf.matchIndex)
+	}
+
 	DPrintf("[%d] [%v] updated commit index: %d", rf.self, rf.state, rf.commitIndex)
 	DPrintf("[%d] [%v] updated last applied: %d", rf.self, rf.state, rf.lastApplied)
 }
@@ -410,6 +416,7 @@ func (rf *Raft) startElection() {
 		DPrintf("[%d] received majority of votes, becoming leader", rf.self)
 		rf.state = Leader
 		rf.resetIndex()
+		rf.matchIndex[rf.self] = rf.GetLastLogIndex()
 	}
 }
 
@@ -431,6 +438,7 @@ func (rf *Raft) sendHeartbeat() {
 			Entries:      rf.logEntries[rf.nextIndex[i]:],
 			LeaderCommit: rf.commitIndex,
 		}
+		DPrintf("[%d] sending heartbeat to [%d]; new enteries: %v", self, i, appendEntriesArgList[i].Entries)
 	}
 	rf.mu.Unlock()
 
@@ -441,10 +449,10 @@ func (rf *Raft) sendHeartbeat() {
 		}
 
 		go func(server int, appendEntriesArgs *AppendEntriesArgs) {
-			DPrintf("[%d] sending heartbeat to [%d]", self, server)
 			appendEntriesReply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(server, appendEntriesArgs, &appendEntriesReply)
 			if !ok {
+				DPrintf("[%d] heartbeat to [%d] failed", self, server)
 				return
 			}
 
@@ -511,6 +519,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 			Command: command,
 		})
+		rf.nextIndex[rf.self] = index
+		rf.matchIndex[rf.self] = index - 1
 	}
 
 	return index, term, isLeader
