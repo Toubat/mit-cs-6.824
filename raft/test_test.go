@@ -149,11 +149,15 @@ func TestBasicAgree2B(t *testing.T) {
 
 	iters := 3
 	for index := 1; index < iters+1; index++ {
+		DPrintf("Test (2B): check commit for index %v ...", index)
 		nd, _ := cfg.nCommitted(index)
+		DPrintf("Test (2B): check commit for index %v; nd %v", index, nd)
+
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
 
+		DPrintf("Test (2B): start index %v ...", index)
 		xindex := cfg.one(index*100, servers, false)
 		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)

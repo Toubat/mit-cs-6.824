@@ -121,6 +121,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// update commit index
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = Min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
+		rf.applyCond.Broadcast()
 	}
 
 	DPrintf("[%d] [%s] appended %d log entries from [%d]; updated commitIndex to %d", rf.self, "AppendEntries", len(args.Entries), args.LeaderId, rf.commitIndex)

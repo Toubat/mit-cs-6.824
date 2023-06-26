@@ -263,11 +263,13 @@ func (rf *Raft) applyCommittedEntries() {
 			entry := rf.logEntries[rf.lastApplied]
 
 			// apply the command to the state machine
+			DPrintf("[%d] applying log entry %d...", rf.self, rf.lastApplied)
 			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,
-				CommandIndex: rf.lastApplied,
+				CommandIndex: rf.lastApplied + 1,
 			}
+			DPrintf("[%d] log entry %d has been applied", rf.self, rf.lastApplied)
 		}
 		rf.mu.Unlock()
 
@@ -292,13 +294,7 @@ func (rf *Raft) heartbeat() {
 // periodically check if commitIndex can be advanced, and update commitIndex
 func (rf *Raft) refreshCommitIndex() {
 	for {
-		rf.mu.Lock()
-		isLeader := rf.state == Leader
-		rf.mu.Unlock()
-
-		if isLeader {
-			rf.updateCommitIndex()
-		}
+		rf.updateCommitIndex()
 
 		time.Sleep(CommitIndexInterval)
 	}
@@ -308,9 +304,14 @@ func (rf *Raft) updateCommitIndex() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	DPrintf("[%d] [%v] updating commit index...", rf.self, rf.state)
+	DPrintf("[%d] [%v] current commit index: %d", rf.self, rf.state, rf.commitIndex)
+	DPrintf("[%d] [%v] current last applied: %d", rf.self, rf.state, rf.lastApplied)
+	DPrintf("[%d] [%v] current logs: %v", rf.self, rf.state, rf.logEntries)
+
 	// find the largest N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm
 	N, lo, hi := rf.commitIndex, rf.commitIndex+1, rf.GetLastLogIndex()
-	for lo < hi {
+	for lo <= hi {
 		mid := lo + (hi-lo)/2
 
 		matchCount := 0
@@ -337,6 +338,9 @@ func (rf *Raft) updateCommitIndex() {
 		rf.commitIndex = N
 		rf.applyCond.Broadcast()
 	}
+
+	DPrintf("[%d] [%v] updated commit index: %d", rf.self, rf.state, rf.commitIndex)
+	DPrintf("[%d] [%v] updated last applied: %d", rf.self, rf.state, rf.lastApplied)
 }
 
 func (rf *Raft) startElection() {
@@ -497,7 +501,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	index := len(rf.logEntries)
+	index := len(rf.logEntries) + 1
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
 
@@ -556,6 +560,7 @@ func Make(peers []*labrpc.ClientEnd, self int, persister *Persister, applyCh cha
 		state:       Follower,
 		dead:        0,
 	}
+	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.resetElectionTimeout()
 
 	// initialize from state persisted before a crash
