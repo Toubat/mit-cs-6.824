@@ -241,9 +241,7 @@ func (rf *Raft) startElectionTimer() {
 		rf.mu.Unlock()
 
 		if shouldStartElection {
-			DPrintf("[%d] ############################", rf.self)
 			DPrintf("[%d] starting a new election...", rf.self)
-			DPrintf("[%d] ############################", rf.self)
 			go rf.startElection()
 		}
 
