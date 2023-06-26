@@ -30,10 +30,10 @@ import (
 // import "bytes"
 // import "labgob"
 
-const MinElectionTimeout = 450 * time.Millisecond
-const MaxElectionTimeout = 750 * time.Millisecond
+const MinElectionTimeout = 350 * time.Millisecond
+const MaxElectionTimeout = 550 * time.Millisecond
 const ElectionTickInterval = 10 * time.Millisecond
-const HeartbeatInterval = 150 * time.Millisecond
+const HeartbeatInterval = 120 * time.Millisecond
 const CommitIndexInterval = 50 * time.Millisecond
 const ApplyLogInterval = 50 * time.Millisecond
 
@@ -474,10 +474,28 @@ func (rf *Raft) sendHeartbeat() {
 				rf.nextIndex[server] = rf.matchIndex[server] + 1
 			} else {
 				DPrintf("[%d] heartbeat rejected by [%d]", self, server)
-				// decrement nextIndex and retry
-				rf.nextIndex[server]--
-				// TODO: optimize decrement nextIndex process
-				// ...
+				// optimize decrement nextIndex process to bypass a term per RPC
+				conflictTerm := appendEntriesReply.ConflictTerm
+				termIndex := appendEntriesReply.TermIndex
+				prevLogIndex := appendEntriesArgs.PrevLogIndex
+				nextIndex := termIndex
+
+				// server is not in follower state
+				if conflictTerm == Invalid && termIndex == Invalid {
+					return
+				}
+
+				// missing log entries
+				if conflictTerm == Invalid {
+					rf.nextIndex[server] = termIndex
+					return
+				}
+
+				// bypass a term if possible
+				for nextIndex < prevLogIndex && rf.logEntries[nextIndex].Term == conflictTerm {
+					nextIndex++
+				}
+				rf.nextIndex[server] = nextIndex
 			}
 		}(i, &appendEntriesArgList[i])
 	}

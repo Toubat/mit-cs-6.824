@@ -23,11 +23,14 @@ type AppendEntriesArgs struct {
 	PrevLogTerm  int        // term of prevLogIndex entry
 	Entries      LogEntries // log entries to store (empty for heartbeat; may send more than one for efficiency)
 	LeaderCommit int        // leader's commitIndex
+
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term         int  // currentTerm, for leader to update itself
+	Success      bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	ConflictTerm int  // term of conflicting log entry, if any; -1 if no conflict
+	TermIndex    int  // index of first entry with ConflictTerm, if any; -1 if no conflict
 }
 
 func (rf *Raft) onRequestVote(term int) {
@@ -90,6 +93,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[%d] [%s] rejected heartbeat from [%d]; state: %v, currentTerm: %v", rf.self, "AppendEntries", args.LeaderId, rf.state, rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.ConflictTerm = Invalid
+		reply.TermIndex = Invalid
 		return
 	}
 
@@ -101,15 +106,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[%d] [%s] missing log entries starting from index %d", rf.self, "AppendEntries", args.PrevLogIndex)
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.ConflictTerm = Invalid
+		reply.TermIndex = len(rf.logEntries)
 		return
 	}
 
 	// delete all entries starting from the conflicting entry
 	if conflict {
 		DPrintf("[%d] [%s] deleting log entries starting from index %d", rf.self, "AppendEntries", args.PrevLogIndex)
-		rf.logEntries = rf.logEntries[:args.PrevLogIndex]
+
+		// find the first index of the conflicting term
+		conflictTerm := rf.logEntries[args.PrevLogIndex].Term
+		termIndex := args.PrevLogIndex
+		for i := args.PrevLogIndex; i >= 0; i-- {
+			if rf.logEntries[i].Term != conflictTerm {
+				break
+			}
+			termIndex = i
+		}
+
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.ConflictTerm = conflictTerm
+		reply.TermIndex = termIndex
+
+		rf.logEntries = rf.logEntries[:args.PrevLogIndex]
 		return
 	}
 
@@ -127,4 +148,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("[%d] [%s] appended %d log entries from [%d]; updated commitIndex to %d", rf.self, "AppendEntries", len(args.Entries), args.LeaderId, rf.commitIndex)
 	reply.Term = rf.currentTerm
 	reply.Success = true
+	reply.ConflictTerm = Invalid
+	reply.TermIndex = Invalid
 }

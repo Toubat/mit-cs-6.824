@@ -9,8 +9,8 @@ import (
 )
 
 // Debugging
-const Debug = 1
-const WriteToDisk = true
+const Debug = 0
+const WriteToDisk = false
 
 var FileName = fmt.Sprintf("debug_raft[%v].log", time.Now().Format("2006-01-02_15-04-05"))
 
