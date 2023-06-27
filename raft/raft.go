@@ -18,12 +18,14 @@ package raft
 //
 
 import (
+	"bytes"
 	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/Toubat/mit-cs-6.824/labgob"
 	"github.com/Toubat/mit-cs-6.824/labrpc"
 )
 
@@ -36,6 +38,7 @@ const ElectionTickInterval = 10 * time.Millisecond
 const HeartbeatInterval = 120 * time.Millisecond
 const CommitIndexInterval = 50 * time.Millisecond
 const ApplyLogInterval = 50 * time.Millisecond
+const PersistInterval = 150 * time.Millisecond
 
 type State string
 
@@ -87,6 +90,7 @@ type Raft struct {
 	// Other state
 	peers           []*labrpc.ClientEnd // RPC end points of all peers
 	persister       *Persister          // Object to hold this peer's persisted state
+	persistCond     *sync.Cond          // condition variable to notify changes of persistent state
 	self            int                 // this peer's index into peers[]
 	dead            int32               // set by Kill()
 	applyCh         chan ApplyMsg       // channel to send committed messages to kvserver
@@ -96,6 +100,12 @@ type Raft struct {
 	mu              sync.Mutex          // Lock to protect shared access to this peer's state
 }
 
+type RaftState struct {
+	CurrentTerm int
+	VotedFor    int
+	LogEntries  LogEntries
+}
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -103,6 +113,20 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 
 	return rf.currentTerm, rf.state == Leader
+}
+
+func (rf *Raft) GetRaftState() RaftState {
+	return RaftState{
+		CurrentTerm: rf.currentTerm,
+		VotedFor:    rf.votedFor,
+		LogEntries:  rf.logEntries,
+	}
+}
+
+func (rf *Raft) SetRaftState(state RaftState) {
+	rf.currentTerm = state.CurrentTerm
+	rf.votedFor = state.VotedFor
+	rf.logEntries = state.LogEntries
 }
 
 func (rf *Raft) GetLastLogIndex() int {
@@ -166,20 +190,6 @@ func (rf *Raft) CheckLogMatch(prevLogIndex int, prevLogTerm int) (bool, bool) {
 	return matchTerm, !matchTerm
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
-}
-
 func (rf *Raft) resetElectionTimeout() {
 	randDuration := time.Duration(rand.Int63n(int64(MaxElectionTimeout-MinElectionTimeout))) + MinElectionTimeout
 	rf.electionTimeout = time.Now().Add(randDuration)
@@ -197,6 +207,7 @@ func (rf *Raft) resetIndex() {
 func (rf *Raft) appendLogEntry(index int, entry LogEntry) {
 	if index < len(rf.logEntries) {
 		rf.logEntries[index] = entry
+		rf.persistCond.Broadcast()
 		return
 	}
 
@@ -204,33 +215,7 @@ func (rf *Raft) appendLogEntry(index int, entry LogEntry) {
 		log.Fatalf("index %d is not the next index", index)
 	}
 	rf.logEntries = append(rf.logEntries, entry)
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
-
-func (rf *Raft) run() {
-	go rf.startElectionTimer()
-	go rf.heartbeat()
-	go rf.refreshCommitIndex()
-	go rf.applyCommittedEntries()
+	rf.persistCond.Broadcast()
 }
 
 func (rf *Raft) startElectionTimer() {
@@ -246,6 +231,29 @@ func (rf *Raft) startElectionTimer() {
 		}
 
 		time.Sleep(ElectionTickInterval)
+	}
+}
+
+func (rf *Raft) heartbeat() {
+	for {
+		rf.mu.Lock()
+		isLeader := rf.state == Leader
+		rf.mu.Unlock()
+
+		if isLeader {
+			go rf.sendHeartbeat()
+		}
+
+		time.Sleep(HeartbeatInterval)
+	}
+}
+
+// periodically check if commitIndex can be advanced, and update commitIndex
+func (rf *Raft) refreshCommitIndex() {
+	for {
+		rf.updateCommitIndex()
+
+		time.Sleep(CommitIndexInterval)
 	}
 }
 
@@ -275,37 +283,54 @@ func (rf *Raft) applyCommittedEntries() {
 	}
 }
 
-func (rf *Raft) heartbeat() {
+// save Raft's persistent state to stable storage,
+// where it can later be retrieved after a crash and restart.
+// see paper's Figure 2 for a description of what should be persistent.
+func (rf *Raft) persistA() {
 	for {
 		rf.mu.Lock()
-		isLeader := rf.state == Leader
+		rf.persistCond.Wait()
+		rf.savePersist()
 		rf.mu.Unlock()
 
-		if isLeader {
-			go rf.sendHeartbeat()
-		}
-
-		time.Sleep(HeartbeatInterval)
+		// time.Sleep(PersistInterval)
 	}
 }
 
-// periodically check if commitIndex can be advanced, and update commitIndex
-func (rf *Raft) refreshCommitIndex() {
-	for {
-		rf.updateCommitIndex()
+// save Raft's persistent state to stable storage.
+func (rf *Raft) savePersist() {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.GetRaftState())
 
-		time.Sleep(CommitIndexInterval)
+	DPrintf("[%d] saving persisted state: %v", rf.self, rf.GetRaftState())
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+}
+
+// restore previously persisted state.
+func (rf *Raft) readPersist(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		DPrintf("[%d] no persisted state", rf.self)
+		return
 	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var state RaftState
+	if d.Decode(&state) != nil {
+		DPrintf("[%d] failed to read persisted state", rf.self)
+		log.Fatalf("failed to read persisted state")
+	}
+
+	DPrintf("[%d] read persisted state: %v", rf.self, state)
+	rf.SetRaftState(state)
 }
 
 func (rf *Raft) updateCommitIndex() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	DPrintf("[%d] [%v] updating commit index...", rf.self, rf.state)
-	DPrintf("[%d] [%v] current commit index: %d", rf.self, rf.state, rf.commitIndex)
-	DPrintf("[%d] [%v] current last applied: %d", rf.self, rf.state, rf.lastApplied)
-	DPrintf("[%d] [%v] current logs: %v", rf.self, rf.state, rf.logEntries)
 
 	// find the largest N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm
 	N, lo, hi := rf.commitIndex, rf.commitIndex+1, rf.GetLastLogIndex()
@@ -342,9 +367,6 @@ func (rf *Raft) updateCommitIndex() {
 		DPrintf("[%d] [%v] nextIndex: %v", rf.self, rf.state, rf.nextIndex)
 		DPrintf("[%d] [%v] matchIndex: %v", rf.self, rf.state, rf.matchIndex)
 	}
-
-	DPrintf("[%d] [%v] updated commit index: %d", rf.self, rf.state, rf.commitIndex)
-	DPrintf("[%d] [%v] updated last applied: %d", rf.self, rf.state, rf.lastApplied)
 }
 
 func (rf *Raft) startElection() {
@@ -353,6 +375,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	rf.votedFor = rf.self
 	rf.resetElectionTimeout()
+	rf.persistCond.Broadcast()
 
 	// prepare RequestVoteArgs for RPC
 	self := rf.self
@@ -389,6 +412,7 @@ func (rf *Raft) startElection() {
 				DPrintf("[%d] received higher term from [%d], becoming follower", self, server)
 				rf.currentTerm = requestVoteReply.Term
 				rf.state = Follower
+				rf.persistCond.Broadcast()
 			}
 
 			if requestVoteReply.VoteGranted {
@@ -462,6 +486,7 @@ func (rf *Raft) sendHeartbeat() {
 				DPrintf("[%d] received higher term from [%d], becoming follower", self, server)
 				rf.currentTerm = appendEntriesReply.Term
 				rf.state = Follower
+				rf.persistCond.Broadcast()
 				return
 			}
 
@@ -537,6 +562,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		})
 		rf.nextIndex[rf.self] = index
 		rf.matchIndex[rf.self] = index - 1
+		rf.persistCond.Broadcast()
 	}
 
 	return index, term, isLeader
@@ -587,12 +613,17 @@ func Make(peers []*labrpc.ClientEnd, self int, persister *Persister, applyCh cha
 		dead:        0,
 	}
 	rf.applyCond = sync.NewCond(&rf.mu)
+	rf.persistCond = sync.NewCond(&rf.mu)
 	rf.resetElectionTimeout()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	go rf.run()
+	go rf.startElectionTimer()
+	go rf.heartbeat()
+	go rf.refreshCommitIndex()
+	go rf.applyCommittedEntries()
+	go rf.persistA()
 
 	return rf
 }

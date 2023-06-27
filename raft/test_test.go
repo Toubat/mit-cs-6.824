@@ -424,82 +424,10 @@ func TestRejoin2B(t *testing.T) {
 	cfg.end()
 }
 
-// func TestBasicBackup2B(t *testing.T) {
-// 	servers := 5
-// 	cfg := make_config(t, servers, false)
-// 	n := 5
-// 	defer cfg.cleanup()
-
-// 	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
-
-// 	cfg.one(rand.Int(), servers, true)
-
-// 	// put leader and one follower in a partition
-// 	leader1 := cfg.checkOneLeader()
-// 	cfg.disconnect((leader1 + 2) % servers)
-// 	cfg.disconnect((leader1 + 3) % servers)
-// 	cfg.disconnect((leader1 + 4) % servers)
-
-// 	// submit lots of commands that won't commit
-// 	for i := 0; i < n; i++ {
-// 		cfg.rafts[leader1].Start(rand.Int())
-// 	}
-
-// 	time.Sleep(RaftElectionTimeout / 2)
-
-// 	cfg.disconnect((leader1 + 0) % servers)
-// 	cfg.disconnect((leader1 + 1) % servers)
-
-// 	// allow other partition to recover
-// 	cfg.connect((leader1 + 2) % servers)
-// 	cfg.connect((leader1 + 3) % servers)
-// 	cfg.connect((leader1 + 4) % servers)
-
-// 	// lots of successful commands to new group.
-// 	for i := 0; i < n; i++ {
-// 		cfg.one(rand.Int(), 3, true)
-// 	}
-
-// 	// now another partitioned leader and one follower
-// 	leader2 := cfg.checkOneLeader()
-// 	other := (leader1 + 2) % servers
-// 	if leader2 == other {
-// 		other = (leader2 + 1) % servers
-// 	}
-// 	cfg.disconnect(other)
-
-// 	// lots more commands that won't commit
-// 	for i := 0; i < n; i++ {
-// 		cfg.rafts[leader2].Start(rand.Int())
-// 	}
-
-// 	time.Sleep(RaftElectionTimeout / 2)
-
-// 	// bring original leader back to life,
-// 	for i := 0; i < servers; i++ {
-// 		cfg.disconnect(i)
-// 	}
-// 	cfg.connect((leader1 + 0) % servers)
-// 	cfg.connect((leader1 + 1) % servers)
-// 	cfg.connect(other)
-
-// 	// lots of successful commands to new group.
-// 	for i := 0; i < n; i++ {
-// 		cfg.one(rand.Int(), 3, true)
-// 	}
-
-// 	// now everyone
-// 	for i := 0; i < servers; i++ {
-// 		cfg.connect(i)
-// 	}
-// 	cfg.one(rand.Int(), servers, true)
-
-// 	cfg.end()
-// }
-
 func TestBackup2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
+	n := 50
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
@@ -513,7 +441,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect((leader1 + 4) % servers)
 
 	// submit lots of commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < n; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
@@ -528,7 +456,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 4) % servers)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < n; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 
@@ -541,7 +469,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < n; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
@@ -556,7 +484,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < n; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 
@@ -778,12 +706,16 @@ func TestPersist32C(t *testing.T) {
 
 	cfg.begin("Test (2C): partitioned leader and one follower crash, leader restarts")
 
+	DPrintf("--------------------- 101 start -------------------")
 	cfg.one(101, 3, true)
+	DPrintf("--------------------- 101 end -------------------")
 
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 2) % servers)
 
+	DPrintf("--------------------- 102 start -------------------")
 	cfg.one(102, 2, true)
+	DPrintf("--------------------- 102 end -------------------")
 
 	cfg.crash1((leader + 0) % servers)
 	cfg.crash1((leader + 1) % servers)
@@ -791,12 +723,16 @@ func TestPersist32C(t *testing.T) {
 	cfg.start1((leader + 0) % servers)
 	cfg.connect((leader + 0) % servers)
 
+	DPrintf("--------------------- 103 start -------------------")
 	cfg.one(103, 2, true)
+	DPrintf("--------------------- 103 end -------------------")
 
 	cfg.start1((leader + 1) % servers)
 	cfg.connect((leader + 1) % servers)
 
+	DPrintf("--------------------- 104 start -------------------")
 	cfg.one(104, servers, true)
+	DPrintf("--------------------- 104 end -------------------")
 
 	cfg.end()
 }
