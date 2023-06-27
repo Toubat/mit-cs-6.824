@@ -39,7 +39,7 @@ func (rf *Raft) onRequestVote(term int) {
 		rf.currentTerm = term
 		rf.state = Follower
 		rf.votedFor = Invalid
-		rf.persistCond.Broadcast()
+		rf.savePersist()
 	}
 }
 
@@ -66,7 +66,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		rf.resetElectionTimeout()
-		rf.persistCond.Broadcast()
+		rf.savePersist()
 	} else {
 		DPrintf("[%d] [%s] rejected vote request from [%d]; votedFor: %v, isUpToDate: %v", rf.self, "RequestVote", args.CandidateId, rf.votedFor, upToDate)
 		reply.Term = rf.currentTerm
@@ -80,7 +80,7 @@ func (rf *Raft) onAppendEntries(term int, leaderId int) {
 		rf.currentTerm = term
 		rf.state = Follower
 		rf.votedFor = leaderId
-		rf.persistCond.Broadcast()
+		rf.savePersist()
 	}
 }
 
@@ -134,7 +134,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.TermIndex = termIndex
 
 		rf.logEntries = rf.logEntries[:args.PrevLogIndex]
-		rf.persistCond.Broadcast()
+		rf.savePersist()
 		return
 	}
 

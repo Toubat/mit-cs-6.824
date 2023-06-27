@@ -90,7 +90,6 @@ type Raft struct {
 	// Other state
 	peers           []*labrpc.ClientEnd // RPC end points of all peers
 	persister       *Persister          // Object to hold this peer's persisted state
-	persistCond     *sync.Cond          // condition variable to notify changes of persistent state
 	self            int                 // this peer's index into peers[]
 	dead            int32               // set by Kill()
 	applyCh         chan ApplyMsg       // channel to send committed messages to kvserver
@@ -207,7 +206,7 @@ func (rf *Raft) resetIndex() {
 func (rf *Raft) appendLogEntry(index int, entry LogEntry) {
 	if index < len(rf.logEntries) {
 		rf.logEntries[index] = entry
-		rf.persistCond.Broadcast()
+		rf.savePersist()
 		return
 	}
 
@@ -215,7 +214,7 @@ func (rf *Raft) appendLogEntry(index int, entry LogEntry) {
 		log.Fatalf("index %d is not the next index", index)
 	}
 	rf.logEntries = append(rf.logEntries, entry)
-	rf.persistCond.Broadcast()
+	rf.savePersist()
 }
 
 func (rf *Raft) startElectionTimer() {
@@ -280,20 +279,6 @@ func (rf *Raft) applyCommittedEntries() {
 		rf.mu.Unlock()
 
 		time.Sleep(ApplyLogInterval)
-	}
-}
-
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persistA() {
-	for {
-		rf.mu.Lock()
-		rf.persistCond.Wait()
-		rf.savePersist()
-		rf.mu.Unlock()
-
-		// time.Sleep(PersistInterval)
 	}
 }
 
@@ -375,7 +360,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	rf.votedFor = rf.self
 	rf.resetElectionTimeout()
-	rf.persistCond.Broadcast()
+	rf.savePersist()
 
 	// prepare RequestVoteArgs for RPC
 	self := rf.self
@@ -412,7 +397,7 @@ func (rf *Raft) startElection() {
 				DPrintf("[%d] received higher term from [%d], becoming follower", self, server)
 				rf.currentTerm = requestVoteReply.Term
 				rf.state = Follower
-				rf.persistCond.Broadcast()
+				rf.savePersist()
 			}
 
 			if requestVoteReply.VoteGranted {
@@ -486,7 +471,7 @@ func (rf *Raft) sendHeartbeat() {
 				DPrintf("[%d] received higher term from [%d], becoming follower", self, server)
 				rf.currentTerm = appendEntriesReply.Term
 				rf.state = Follower
-				rf.persistCond.Broadcast()
+				rf.savePersist()
 				return
 			}
 
@@ -562,7 +547,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		})
 		rf.nextIndex[rf.self] = index
 		rf.matchIndex[rf.self] = index - 1
-		rf.persistCond.Broadcast()
+		rf.savePersist()
 	}
 
 	return index, term, isLeader
@@ -613,7 +598,6 @@ func Make(peers []*labrpc.ClientEnd, self int, persister *Persister, applyCh cha
 		dead:        0,
 	}
 	rf.applyCond = sync.NewCond(&rf.mu)
-	rf.persistCond = sync.NewCond(&rf.mu)
 	rf.resetElectionTimeout()
 
 	// initialize from state persisted before a crash
@@ -623,7 +607,6 @@ func Make(peers []*labrpc.ClientEnd, self int, persister *Persister, applyCh cha
 	go rf.heartbeat()
 	go rf.refreshCommitIndex()
 	go rf.applyCommittedEntries()
-	go rf.persistA()
 
 	return rf
 }
