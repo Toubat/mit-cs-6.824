@@ -32,13 +32,12 @@ import (
 // import "bytes"
 // import "labgob"
 
-const MinElectionTimeout = 350 * time.Millisecond
-const MaxElectionTimeout = 550 * time.Millisecond
+const MinElectionTimeout = 250 * time.Millisecond
+const MaxElectionTimeout = 400 * time.Millisecond
 const ElectionTickInterval = 10 * time.Millisecond
-const HeartbeatInterval = 120 * time.Millisecond
-const CommitIndexInterval = 50 * time.Millisecond
-const ApplyLogInterval = 50 * time.Millisecond
-const PersistInterval = 150 * time.Millisecond
+const HeartbeatInterval = 100 * time.Millisecond
+const CommitIndexInterval = 20 * time.Millisecond
+const ApplyLogInterval = 20 * time.Millisecond
 
 type State string
 
@@ -218,7 +217,7 @@ func (rf *Raft) appendLogEntry(index int, entry LogEntry) {
 }
 
 func (rf *Raft) startElectionTimer() {
-	for {
+	for !rf.killed() {
 		rf.mu.Lock()
 		timeout := time.Now().After(rf.electionTimeout)
 		shouldStartElection := rf.state != Leader && timeout
@@ -234,7 +233,7 @@ func (rf *Raft) startElectionTimer() {
 }
 
 func (rf *Raft) heartbeat() {
-	for {
+	for !rf.killed() {
 		rf.mu.Lock()
 		isLeader := rf.state == Leader
 		rf.mu.Unlock()
@@ -249,7 +248,7 @@ func (rf *Raft) heartbeat() {
 
 // periodically check if commitIndex can be advanced, and update commitIndex
 func (rf *Raft) refreshCommitIndex() {
-	for {
+	for !rf.killed() {
 		rf.updateCommitIndex()
 
 		time.Sleep(CommitIndexInterval)
@@ -257,7 +256,7 @@ func (rf *Raft) refreshCommitIndex() {
 }
 
 func (rf *Raft) applyCommittedEntries() {
-	for {
+	for !rf.killed() {
 		rf.mu.Lock()
 		for rf.commitIndex <= rf.lastApplied {
 			rf.applyCond.Wait()
@@ -400,6 +399,11 @@ func (rf *Raft) startElection() {
 				rf.savePersist()
 			}
 
+			if rf.state != Candidate {
+				DPrintf("[%d] no longer a candidate", self)
+				return
+			}
+
 			if requestVoteReply.VoteGranted {
 				voteCount++
 			}
@@ -424,6 +428,13 @@ func (rf *Raft) startElection() {
 		rf.state = Leader
 		rf.resetIndex()
 		rf.matchIndex[rf.self] = rf.GetLastLogIndex()
+
+		// IMPORTANT: send initial empty AppendEntries RPCs (heartbeat) to each server
+		// to allow commit for all lower term' entries on leader elected
+		// rf.logEntries = append(rf.logEntries, LogEntry{
+		// 	Term:    rf.currentTerm,
+		// 	Command: 0,
+		// })
 	}
 }
 
@@ -437,12 +448,15 @@ func (rf *Raft) sendHeartbeat() {
 			continue
 		}
 
+		logEntries := make(LogEntries, len(rf.logEntries[rf.nextIndex[i]:]))
+		copy(logEntries, rf.logEntries[rf.nextIndex[i]:])
+
 		appendEntriesArgList[i] = AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.self,
 			PrevLogIndex: rf.GetPrevLogIndex(i),
 			PrevLogTerm:  rf.GetPrevLogTerm(i),
-			Entries:      rf.logEntries[rf.nextIndex[i]:],
+			Entries:      logEntries,
 			LeaderCommit: rf.commitIndex,
 		}
 		DPrintf("[%d] sending heartbeat to [%d]; new enteries: %v", self, i, appendEntriesArgList[i].Entries)
@@ -472,6 +486,11 @@ func (rf *Raft) sendHeartbeat() {
 				rf.currentTerm = appendEntriesReply.Term
 				rf.state = Follower
 				rf.savePersist()
+				return
+			}
+
+			if rf.state != Leader {
+				DPrintf("[%d] no longer a leader", self)
 				return
 			}
 
@@ -563,7 +582,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // to suppress debug output from a Kill()ed instance.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+
+	// race: limit on 8128 simultaneously alive goroutines is exceeded, dying, solve this issue
+
 }
 
 func (rf *Raft) killed() bool {

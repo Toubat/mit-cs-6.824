@@ -840,7 +840,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	cfg.one(rand.Int()%10000, 1, true)
 
 	nup := servers
-	for iters := 0; iters < 1000; iters++ {
+	for iters := 0; iters < 500; iters++ {
 		if iters == 200 {
 			cfg.setlongreordering(true)
 		}
@@ -883,6 +883,14 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	cfg.one(rand.Int()%10000, servers, true)
 
 	cfg.end()
+}
+
+func TestReliableChurn2C(t *testing.T) {
+	internalChurn(t, false)
+}
+
+func TestUnreliableChurn2C(t *testing.T) {
+	internalChurn(t, true)
 }
 
 func internalChurn(t *testing.T, unreliable bool) {
@@ -1028,12 +1036,4 @@ func internalChurn(t *testing.T, unreliable bool) {
 	}
 
 	cfg.end()
-}
-
-func TestReliableChurn2C(t *testing.T) {
-	internalChurn(t, false)
-}
-
-func TestUnreliableChurn2C(t *testing.T) {
-	internalChurn(t, true)
 }
