@@ -32,10 +32,10 @@ import (
 // import "bytes"
 // import "labgob"
 
-const MinElectionTimeout = 250 * time.Millisecond
-const MaxElectionTimeout = 400 * time.Millisecond
+const MinElectionTimeout = 150 * time.Millisecond
+const MaxElectionTimeout = 300 * time.Millisecond
 const ElectionTickInterval = 10 * time.Millisecond
-const HeartbeatInterval = 100 * time.Millisecond
+const HeartbeatInterval = 50 * time.Millisecond
 const CommitIndexInterval = 20 * time.Millisecond
 const ApplyLogInterval = 20 * time.Millisecond
 
@@ -435,6 +435,7 @@ func (rf *Raft) startElection() {
 		// 	Term:    rf.currentTerm,
 		// 	Command: 0,
 		// })
+		// rf.savePersist()
 	}
 }
 
